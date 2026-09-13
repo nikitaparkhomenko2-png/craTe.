@@ -14,7 +14,33 @@ async function allGroups(){if(!pool)return mem.groups;const r=await pool.query('
 async function addGroup(g){if(!pool){mem.groups.push(g);return}await pool.query('INSERT INTO groups_data(id,name,owner,members,created_at) VALUES($1,$2,$3,$4,$5)',[g.id,g.name,g.owner,JSON.stringify(g.members),g.createdAt])}
 function json(res,status,obj){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Access-Control-Allow-Origin':'*','Cache-Control':'no-store'});res.end(JSON.stringify(obj))}
 function body(req){return new Promise((resolve,reject)=>{let d='';req.on('data',c=>{d+=c;if(d.length>1e6){req.destroy();reject(new Error('too large'))}});req.on('end',()=>{try{resolve(d?JSON.parse(d):{})}catch(e){reject(e)}});req.on('error',reject)})}
-async function ai(message){const key=process.env.AI_API_KEY;if(!key)return 'neXi AI сейчас работает в базовом режиме. Подключи AI-ключ на сервере, чтобы получать полноценные ответы.';return 'neXi AI готов обработать запрос.'}
+async function ai(message){
+  const key=process.env.OPENROUTER_API_KEY||process.env.AI_API_KEY;
+  if(!key)return 'neXi AI сейчас не подключён. Администратору нужно добавить OPENROUTER_API_KEY в Environment Variables Render.';
+  const base=(process.env.AI_BASE_URL||'https://openrouter.ai/api/v1').replace(/\/$/,'');
+  const model=process.env.AI_MODEL||'openrouter/free';
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),20000);
+  try{
+    const r=await fetch(base+'/chat/completions',{
+      method:'POST',
+      headers:{'Authorization':'Bearer '+key,'Content-Type':'application/json','X-Title':'craTe.'},
+      body:JSON.stringify({model,messages:[
+        {role:'system',content:'Ты neXi AI — встроенный дружелюбный AI-помощник мессенджера craTe. Отвечай на русском, если пользователь пишет по-русски. Отвечай полезно и естественно.'},
+        {role:'user',content:message}
+      ],temperature:0.7,max_tokens:800}),
+      signal:controller.signal
+    });
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(data?.error?.message||('AI HTTP '+r.status));
+    const reply=data?.choices?.[0]?.message?.content;
+    if(!reply)throw new Error('AI returned empty response');
+    return String(reply).trim();
+  }catch(e){
+    console.error('AI error:',e.message);
+    return 'neXi AI временно не смог ответить. Попробуй ещё раз через несколько секунд.';
+  }finally{clearTimeout(timer)}
+}
 const server=http.createServer(async(req,res)=>{try{
 if(req.method==='OPTIONS'){res.writeHead(204,{'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'Content-Type'});return res.end()}
 if(req.url==='/api/health')return json(res,200,{ok:true,name:'craTe.'});
