@@ -1,4 +1,0 @@
-const {execFile}=require('child_process');
-function arpPeers(){return new Promise(resolve=>{if(process.platform!=='win32')return resolve([]);execFile('arp',['-a'],{windowsHide:true,maxBuffer:1024*1024},(err,out)=>{if(err)return resolve([]);const ips=[...String(out).matchAll(/\b(26\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/g)].map(m=>m[1]);resolve([...new Set(ips)]);});});}
-async function discover(port=3000,timeout=350){const peers=await arpPeers();const http=require('http');return (await Promise.all(peers.map(ip=>new Promise(resolve=>{const req=http.get({host:ip,port,path:'/api/health',timeout},res=>{let d='';res.on('data',c=>d+=c);res.on('end',()=>resolve(res.statusCode===200?{ip,port}:null));});req.on('error',()=>resolve(null));req.on('timeout',()=>{req.destroy();resolve(null)});})))) .filter(Boolean);}
-module.exports={discover};
