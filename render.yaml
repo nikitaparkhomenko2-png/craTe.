@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: crate-web
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: crate-db
+          property: connectionString
+      - key: NODE_ENV
+        value: production
+
+databases:
+  - name: crate-db
+    plan: free
