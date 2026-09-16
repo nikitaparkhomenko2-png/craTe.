@@ -62,10 +62,34 @@ let wsRetry=0,wsConnecting=false,wsHeartbeat=null;
 function connect(){if(wsConnecting)return;wsConnecting=true;try{ws?.close()}catch{};try{ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}`);ws.onopen=()=>{wsConnecting=false;wsRetry=0;ws.send(JSON.stringify({type:'hello',user}));clearInterval(wsHeartbeat);wsHeartbeat=setInterval(()=>{if(ws?.readyState===1)ws.send(JSON.stringify({type:'ping'}))},20000)};ws.onmessage=async e=>{const m=JSON.parse(e.data);if(m.type==='snapshot'){users=m.users||[];messages=m.messages||[];groups=m.groups||[];online=new Set(m.online||[]);const me=users.find(x=>x.username===user.username);friends=me?.friends||user.friends||[];user={...user,...me,friends};localStorage.setItem('nexiUser',JSON.stringify(user));if(view==='messages')renderFriends();if(view==='groups')renderGroups();renderChat()}if(m.type==='friends'){friends=m.friends||[];user.friends=friends;localStorage.setItem('nexiUser',JSON.stringify(user));renderFriends()}if(m.type==='message'){messages.push(m.message);if(m.message.to===user.username){audio.currentTime=0;audio.play().catch(()=>{});if(selected!==m.message.from){unread[m.message.from]=true;localStorage.setItem('crateUnread',JSON.stringify(unread))}}renderFriends();renderChat()}if(m.type==='group'){const i=groups.findIndex(g=>g.id===m.group.id);if(i>=0)groups[i]=m.group;else groups.push(m.group);renderGroups()}if(m.type==='group-message'){messages.push(m.message);if(selectedGroup?.id!==m.message.groupId){unread[m.message.groupId]=true;localStorage.setItem('crateUnread',JSON.stringify(unread))}if(selectedGroup?.id===m.message.groupId)renderGroupChat();renderGroups()}if(m.type==='group-cleared'){messages=messages.filter(x=>x.groupId!==m.id);if(selectedGroup?.id===m.id)renderGroupChat()}if(m.type==='group-deleted'){groups=groups.filter(g=>g.id!==m.id);messages=messages.filter(x=>x.groupId!==m.id);if(selectedGroup?.id===m.id){selectedGroup=null;selected=null;showGroups()}else renderGroups()}if(m.type==='presence'){m.online?online.add(m.username):online.delete(m.username);renderFriends();if(selected)openChat(selected)}if(m.type==='error')toast(m.message);if(m.type==='call-offer')incomingCall(m);if(m.type==='call-answer'&&pc)await pc.setRemoteDescription(m.answer);if(m.type==='ice'&&pc)try{await pc.addIceCandidate(m.candidate)}catch(e){console.warn('ICE add failed',e)}if(m.type==='call-end')endCall(false)};ws.onclose=()=>{wsConnecting=false;clearInterval(wsHeartbeat);const delay=Math.min(10000,1000*Math.pow(2,wsRetry++));setTimeout(connect,delay)};ws.onerror=()=>{try{ws.close()}catch{}}}catch{wsConnecting=false;setTimeout(connect,2000)}}
 window.addEventListener('online',()=>{wsRetry=0;connect()});window.addEventListener('offline',()=>{try{ws?.close()}catch{}});
 
+async function getCallAudio(){
+  if(!navigator.mediaDevices?.getUserMedia) throw new Error('Браузер не поддерживает микрофон');
+  const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
+  const tracks=stream.getAudioTracks();
+  if(!tracks.length) throw new Error('Микрофон не найден');
+  tracks.forEach(t=>t.enabled=true);
+  return stream;
+}
+function setupPeer(target){
+  const peer=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun.cloudflare.com:3478'}]});
+  peer.onicecandidate=e=>{if(e.candidate&&ws?.readyState===1)ws.send(JSON.stringify({type:'ice',to:target,candidate:e.candidate}))};
+  peer.ontrack=e=>{
+    let a=document.getElementById('remoteAudio');
+    if(!a){a=document.createElement('audio');a.id='remoteAudio';a.autoplay=true;a.playsInline=true;a.controls=false;a.style.display='none';document.body.appendChild(a)}
+    if(e.streams?.[0]) a.srcObject=e.streams[0];
+    a.volume=1;
+    const play=()=>a.play().catch(()=>{});
+    play(); document.addEventListener('click',play,{once:true});
+  };
+  peer.oniceconnectionstatechange=()=>{if(peer.iceConnectionState==='failed'){try{peer.restartIce()}catch{}}};
+  peer.onconnectionstatechange=()=>{if(['failed','closed'].includes(peer.connectionState)&&peer===pc)endCall(false)};
+  return peer;
+}
 async function startCall(){if(!selected)return;if(!window.isSecureContext){toast('Для звонков откройте craTe через HTTPS');return}try{endCall(false);localStream=await getCallAudio();pc=setupPeer(selected);localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));callPeer=selected;const offer=await pc.createOffer({offerToReceiveAudio:true});await pc.setLocalDescription(offer);ws.send(JSON.stringify({type:'call-offer',to:selected,offer:pc.localDescription}));$('hangBtn').style.display='block';toast('Звоним @'+selected)}catch(e){console.error('start call',e);toast('Не удалось включить микрофон: '+(e.message||e.name))}}
 function incomingCall(m){callPeer=m.from;incomingOffer=m.offer;ringtone.currentTime=0;ringtone.play().catch(()=>{});openModal(`<div class="call-avatar avatar">${esc(initials(m.from))}</div><h3>Входящий звонок</h3><p>@${esc(m.from)} звонит тебе</p><div class="modal-actions call-buttons"><button class="accept" onclick="acceptCall()">Принять</button><button class="reject" onclick="rejectCall()">Отклонить</button></div>`)}
 async function acceptCall(){ringtone.pause();ringtone.currentTime=0;closeModal();if(!window.isSecureContext){toast('Для звонков откройте craTe через HTTPS');return}try{endCall(false);localStream=await getCallAudio();pc=setupPeer(callPeer);localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));await pc.setRemoteDescription(incomingOffer);const ans=await pc.createAnswer({offerToReceiveAudio:true});await pc.setLocalDescription(ans);ws.send(JSON.stringify({type:'call-answer',to:callPeer,answer:pc.localDescription}));$('hangBtn').style.display='block'}catch(e){console.error('accept call',e);toast('Не удалось включить микрофон: '+(e.message||e.name));endCall(false)}}
 function rejectCall(){ringtone.pause();ringtone.currentTime=0;if(callPeer)ws?.send(JSON.stringify({type:'call-end',to:callPeer}));closeModal();callPeer=null;incomingOffer=null}
 function endCall(send=true){ringtone.pause();ringtone.currentTime=0;if(send&&callPeer)ws?.send(JSON.stringify({type:'call-end',to:callPeer}));pc?.close();pc=null;localStream?.getTracks().forEach(t=>t.stop());localStream=null;callPeer=null;incomingOffer=null;const h=$('hangBtn');if(h)h.style.display='none';const a=document.getElementById('remoteAudio');if(a){a.pause();a.srcObject=null;a.remove()}}
 
+if(user){renderApp();connect()}else auth();
 </script></body></html>
